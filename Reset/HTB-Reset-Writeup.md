@@ -5,7 +5,7 @@
 | Platform   | [Hack The Box](https://app.hackthebox.com/machines/Reset)     |
 | Difficulty | Easy                                                          |
 | OS         | Linux                                                         |
-| Author     | samurai                                                       |
+| Author     | Landau                                                       |
 | Date       | April 14, 2026                                                |
 
 ---

